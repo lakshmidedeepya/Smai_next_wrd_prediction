@@ -7,7 +7,7 @@ from typing import List
 
 
 class TerminalUI:
-    def __init__(self, prediction_model, text_content=None):
+    def __init__(self, prediction_model, text_content):
         self.screen = None
         self.suggestions = []
         self.current_suggestion_idx = 0
@@ -16,6 +16,9 @@ class TerminalUI:
         self.user_input = ""
         self.cursor_pos = 0
         self.cursor_row = 1
+        self.total_tab_presses = 0
+        self.total_letters_typed = 0
+        self.total_suggestion_letters = 0
 
         self.suggestions_panel = None
         self.text_panel = None
@@ -26,25 +29,22 @@ class TerminalUI:
 
     def calculate_scores(self, text: str) -> List[int]:
         """
+
         Calculate scores as specified on the question document based on current input.
         """
         # TODO: Write the logic for the scores to evaluate your model
-        if not text.strip():  # Handle empty input
-            return [0, 0, 0, 0]
-        words = text.split()
-        total_words_typed = len(words)
-        total_letters_typed = sum(len(word) for word in words)
-        total_tab_presses = text.count('\t')
-        avg_letters_per_word = total_letters_typed / total_words_typed if total_words_typed > 0 else 0
-        avg_tabs_per_word = total_tab_presses / total_words_typed if total_words_typed > 0 else 0
-        
-        return [
-            total_letters_typed,
-            total_tab_presses,
-            round(avg_letters_per_word, 2),
-            round(avg_tabs_per_word, 2)
-        ]
-        pass
+        # pass
+        total_letters_typed = self.total_letters_typed # Count letters typed
+        total_tab_presses = self.total_tab_presses  # Track total Tab key presses
+        words = text.split()  # Extract currently typed words
+
+
+        total_letters_word=sum(1 for char in text if char.isalpha())
+        avg_letters_per_word = total_letters_typed / total_letters_word if total_letters_word else total_letters_typed # Avg letters per word
+        # avg_tabs_per_word = total_tab_presses / total_words
+        avg_tabs_per_word = total_tab_presses / len(words) if words else 0  # Avg tabs per word
+
+        return [total_letters_typed, total_tab_presses, avg_letters_per_word, avg_tabs_per_word]
 
     def find_last_word_start(self, text: str, cursor_pos: int) -> int:
         """Find the start position of the last word being typed."""
@@ -192,7 +192,8 @@ class TerminalUI:
         self.scores_panel.addstr(0, 2, " Scores ")
 
         # TODO: Set score labels
-        score_labels = ["Total Letters Typed", "Total Tab Presses", "Avg Letters Per Word", "Avg Tabs Per Word"]
+        score_labels = ["Letters Typed:", "Tab Presses:", "Avg Letters/Word:", "Avg Tabs/Word:"]
+        self.scores = self.calculate_scores(self.user_input)
 
         display_text = " | ".join(
             f"{label} {score}" for label, score in zip(score_labels, self.scores)
@@ -214,16 +215,24 @@ class TerminalUI:
 
         if key == 9:
             if self.suggestions:
+                
                 self.current_suggestion_idx = (self.current_suggestion_idx + 1) % len(
                     self.suggestions
                 )
+            
+                self.total_tab_presses+=1
             return True
 
         if key == 10:
+            current_word = self.get_current_word()
             if self.suggestions and self.current_suggestion_idx < len(self.suggestions):
+                
+                
                 self.replace_current_word(self.suggestions[self.current_suggestion_idx])
                 self.suggestions = []
                 self.current_suggestion_idx = 0
+                #self.total_tab_presses = 0
+            self.total_letters_typed+=len(current_word)
             return True
 
         if key == curses.KEY_BACKSPACE or key == 127 or key == 8:  # Backspace
@@ -235,6 +244,7 @@ class TerminalUI:
                 self.cursor_pos -= 1
                 current_word = self.get_current_word()
                 self.suggestions = self.prediction_model.predict_top_words(current_word)
+                #self.total_tab_presses = 0
                 self.current_suggestion_idx = 0
                 self.scores = self.calculate_scores(self.user_input)
             return True
@@ -245,6 +255,7 @@ class TerminalUI:
                 current_word = self.get_current_word()
                 self.suggestions = self.prediction_model.predict_top_words(current_word)
                 self.current_suggestion_idx = 0
+                self.total_tab_presses = 0
             return True
 
         if key == curses.KEY_RIGHT:
@@ -253,6 +264,21 @@ class TerminalUI:
                 current_word = self.get_current_word()
                 self.suggestions = self.prediction_model.predict_top_words(current_word)
                 self.current_suggestion_idx = 0
+                self.total_tab_presses = 0
+            return True
+        
+        if key == 32:  # Spacebar Key -> Reset scores
+            char = chr(key)
+            self.user_input = (
+                self.user_input[: self.cursor_pos]
+                + char
+                + self.user_input[self.cursor_pos :]
+            )
+            
+            self.cursor_pos += 1
+            #self.total_tab_presses = 0  # Reset Tab key presses
+            #self.total_letters_typed = 0  # Reset letter keys typed
+            #self.scores = self.calculate_scores(self.user_input)  # Recalculate scores
             return True
 
         if 32 <= key <= 126:
@@ -265,6 +291,7 @@ class TerminalUI:
             self.cursor_pos += 1
 
             current_word = self.get_current_word()
+            #self.total_tab_presses = 0
             self.suggestions = self.prediction_model.predict_top_words(current_word)
             self.current_suggestion_idx = 0
             self.scores = self.calculate_scores(self.user_input)
@@ -285,28 +312,12 @@ class TerminalUI:
             curses.init_pair(1, curses.COLOR_WHITE, curses.COLOR_BLUE)
 
             max_y, max_x = self.screen.getmaxyx()
-            
-                 
-            # Ensure that the window size is large enough
-            min_height = 10  # Adjust as needed
-            min_width = 20
-            if max_y < min_height or max_x < min_width:
-                curses.endwin()
-                print("Error: Terminal window is too small. Please increase the size and try again.")
-                sys.exit(1)
+
             suggestions_height = 3
             text_height = (max_y - 6) // 2
             input_height = (max_y - 6) // 2
             scores_height = 3
-            print(scores_height)
-            print(suggestions_height)
-            print(text_height)
-            print(input_height)
-            print(scores_height)
-            print(max_y)
-            print(max_x)
-            print(min_height)
-            print(min_width) 
+
             self.suggestions_panel = curses.newwin(suggestions_height, max_x, 0, 0)
             self.text_panel = curses.newwin(text_height, max_x, suggestions_height, 0)
             self.input_panel = curses.newwin(
@@ -388,7 +399,7 @@ if __name__ == "__main__":
     if sys.argv[1].endswith(".txt"):
         corpus_file_path = sys.argv[1]
         try:
-            with open(corpus_file_path, "r", encoding="utf-8") as file:
+            with open(corpus_file_path, "r") as file:
                 corpus = file.read()
         except FileNotFoundError:
             print(f"File not found: {corpus_file_path}")
@@ -405,15 +416,15 @@ if __name__ == "__main__":
 
         for corpus_file_path in corpus_file_path_list:
             try:
-                with open(corpus_file_path, "r", encoding="utf-8") as file:
+                with open(corpus_file_path, "r") as file:
                     cur_corpus = file.read()
             except FileNotFoundError:
                 print(f"File not found: {corpus_file_path}")
                 sys.exit(1)
             corpus += cur_corpus
 
-    n = 2
+    n = 5
     model = NgramCharacterModel(corpus, n)
 
-    ui = TerminalUI(model,corpus)
+    ui = TerminalUI(model, corpus)
     ui.run()
