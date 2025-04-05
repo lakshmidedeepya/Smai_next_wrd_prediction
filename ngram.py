@@ -1,74 +1,123 @@
-from collections import defaultdict, Counter
 import re
-import sys
-
+import random
+from collections import defaultdict, Counter
 
 class NgramCharacterModel:
-    def __init__(self, corpus, n=2):
-        # TODO: Initialize the class variables
-        self.n = n
-        self.model = defaultdict(Counter)
-        self._train(corpus)
-        pass
-    
+    def __init__(self, corpus, n=3):
+        """
+        Initializes the n-gram model and trains it on the given corpus.
+
+        Args:
+            corpus (str): The input training text.
+            n (int): The size of the n-grams. Default is 3 (trigram).
+        """
+        self.n = n  # Order of the n-gram model
+        self.ngram_counts = defaultdict(Counter)  # Stores n-gram character counts
+        self.context_counts = Counter()  # Stores total counts for each (n-1)-gram
+        self.vocab = set()  # Unique characters in corpus
+        self.word_list = set()  # Unique words in corpus
+
+        self._train(corpus)  # Train the model
+
+    def _preprocess(self, text):
+        """
+        Cleans and prepares the text corpus.
+        - Converts text to lowercase
+        - Removes non-alphabetic characters (except spaces and apostrophes)
+        """
+        text = text.lower()
+        text = re.sub(r"[^a-z\s']", " ", text)  # Retain only letters, spaces, and apostrophes
+        text = " ".join(text.split())  # Normalize spaces
+        return text
+
     def _train(self, corpus):
-        # TODO: Train the language model on the given corpus input
-        """Train the N-gram model on the given corpus."""
-        corpus = re.sub(r'[^a-zA-Z ]', '', corpus.lower())  # Clean text
-        corpus = corpus.replace(" ", "_")  # Use underscores to denote word boundaries
-        
-        for i in range(len(corpus) - self.n + 1):
-            prefix = tuple(corpus[i:i + self.n - 1])
-            next_char = corpus[i + self.n - 1]
-            self.model[prefix][next_char] += 1
-    
-        pass
+        """
+        Trains the language model by extracting n-grams from the corpus.
+        """
+        corpus = self._preprocess(corpus)
+        words = corpus.split()  # Tokenize into words
+        self.word_list.update(words)  # Store unique words
+
+        for word in words:
+            for i in range(len(word) - self.n + 1):
+                context = word[i:i + self.n - 1]  # (N-1)-gram prefix
+                next_char = word[i + self.n - 1]  # Next character
+
+                self.ngram_counts[context][next_char] += 1
+                self.context_counts[context] += 1
+                self.vocab.add(next_char)
 
     def _generate_word(self, prefix):
-        # TODO: Given a prefix, generate the most probable word that it completes to
-        """Generate the most probable word given a prefix."""
-        word = prefix
-        for _ in range(10):  # Limit word length to avoid infinite loops
-            next_char = self._generate_char(word)
-            if next_char == "_" or next_char == "":  # Stop at word boundary
+        """
+        Generates a word by iteratively predicting characters.
+
+        Args:
+            prefix (str): The starting sequence.
+
+        Returns:
+            str: The generated word.
+        """
+        prefix = prefix.lower()
+
+        while True:
+            context = prefix[-(self.n - 1):]  # Use last (N-1) characters as context
+            # Backoff strategy: Reduce n-gram size if no match found
+            while context not in self.ngram_counts and len(context) > 1:
+                context = context[1:]  # Reduce context length
+            if context not in self.ngram_counts or not self.ngram_counts[context]:
+                break  # Stop if no valid prediction
+
+            # Pick the most frequent next character
+            next_char = max(self.ngram_counts[context], key=self.ngram_counts[context].get)
+
+            if next_char == " "or next_char is None:  # Stop at space (word boundary)
                 break
-            word += next_char
-        return word.replace("_", " ")  # Convert back to spaces
-        pass
+
+            prefix += next_char
+
+        return prefix.strip()
 
     def predict_top_words(self, prefix, top_k=10):
-        # TODO: Given a prefix, return the top_k most probable words from the corpus it completes to 
-        """Return the top_k most probable words given a prefix."""
-        
-        words = set()
-        for _ in range(top_k * 2):  # Generate multiple attempts to find unique words
-            word = self._generate_word(prefix)
-            if word and word not in words:
-                words.add(word)
-            if len(words) >= top_k:
-                break
-        return list(words)
-        pass
-    
+        """
+        Predicts the most probable words starting with the given prefix.
+
+        Args:
+            prefix (str): The input prefix.
+            top_k (int): Number of top words to return.
+
+        Returns:
+            list: The top K words by probability.
+        """
+        prefix = prefix.lower()
+        candidates = {word: self._word_probability(word) for word in self.word_list if word.startswith(prefix)}
+        # If no exact matches, find words that contain the prefix somewhere
+        if not candidates:
+            candidates = {word: self._word_probability(word) for word in self.word_list if prefix in word}
+
+
+        return sorted(candidates, key=candidates.get, reverse=True)[:top_k]
+
     def _word_probability(self, word):
-        # TODO: Calculates the probability of the word, based on the trigram probabilities
-        """Calculates the probability of the word based on trigram probabilities."""
-        sequence = word.replace(" ", "_")  # Convert spaces to underscores
-        return self._char_probability(sequence)
-        pass
-    def _char_probability(self, sequence: str) -> float:
-        """Calculates the probability of a sequence based on the n-gram model."""
-        if len(sequence) < self.n:
-            return 0.0  # Not enough context for n-gram model
-        
+        """
+        Computes the probability of a word based on n-gram probabilities.
+
+        Args:
+            word (str): The input word.
+
+        Returns:
+            float: Computed probability (returns 0 if any probability is 0).
+        """
         prob = 1.0
-        for i in range(len(sequence) - self.n + 1):
-            prefix = tuple(sequence[i:i + self.n - 1])
-            next_char = sequence[i + self.n - 1]
-            
-            if prefix in self.model and next_char in self.model[prefix]:
-                total_count = sum(self.model[prefix].values())
-                prob *= self.model[prefix][next_char] / total_count
-            else:
-                return 0.0
+        alpha = 0.0001  # Small smoothing factor for unseen cases
+
+        for i in range(len(word) - self.n + 1):
+            context = word[i:i + self.n - 1]
+            char = word[i + self.n - 1]
+
+            context_count = self.context_counts.get(context, 0)
+            char_count = self.ngram_counts[context].get(char, 0)
+
+            # Apply additive smoothing for unseen cases
+            prob *= (char_count + alpha) / (context_count + alpha * len(self.vocab)) 
+
         return prob
